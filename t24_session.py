@@ -138,7 +138,7 @@ def serve(args):
             sys.exit("env selector matched: " + ", ".join(e["label"] for e in m) or "nothing")
         env = m[0]
     bnk = args.bnk or env.get("bnk")
-    if not bnk:                       # auto-detect the per-host bnk.run (t24mig / cbalive / …)
+    if not bnk:                       # auto-detect the per-host bnk.run (varies by jBASE account)
         try:
             _c = ft.connect(env); bnk = ft.detect_bnk_run(_c); _c.close()
         except Exception:

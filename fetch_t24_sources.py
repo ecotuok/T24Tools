@@ -84,7 +84,7 @@ def _find_col(headers, *aliases):
 
 
 def detect_bnk_run(client):
-    """Find the live bnk.run on a host WITHOUT hardcoding the instance (t24mig / cbalive / …):
+    """Find the live bnk.run on a host WITHOUT hardcoding the jBASE account/instance name:
     use $HOME if it holds a VOC (the T24 file dictionary), else search /t24/*/bnk/bnk.run for
     a dir that has a VOC. Returns the path or None."""
     if client is None:

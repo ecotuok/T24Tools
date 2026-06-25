@@ -17,7 +17,7 @@ Group/Example,ENV-01,"tags",<host-ip>,ssh,22,<user>,<password>,/t24/<inst>/bnk/b
 - **Keep this file private** — it holds passwords.
 
 ## 2. Remote path — auto-detected (usually nothing to do)
-`bnk.run` differs per environment (`t24mig`, `cbalive`, …). The tools **auto-detect each
+`bnk.run` differs per environment (each jBASE account has its own). The tools **auto-detect each
 host's `bnk.run`** at connect time — they use `$HOME` if it holds a `VOC` (the T24 file
 dictionary), else search `/t24/*/bnk/bnk.run` for one — so you don't configure it per box.
 
