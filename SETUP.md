@@ -34,6 +34,14 @@ python t24_env.py import-codittle       # pulls connection details only (no pass
 python t24_env.py passwd <label>        # key each password once
 ```
 
+Pull from other clients too (metadata only — you key passwords):
+```
+python t24_env.py import-tabby          # Tabby / Terminus  (reads config.yaml; needs PyYAML)
+python t24_env.py import-termius        # Termius  (best-effort)
+```
+> **Termius** encrypts hosts client-side (end-to-end), so most installs expose nothing readable
+> on disk — the importer tells you and you add those manually. **Tabby** parses cleanly.
+
 ### One-time CSV import (optional)
 A CSV can **seed** the store once, then be deleted — it is never read at runtime:
 ```
@@ -68,4 +76,4 @@ Overrides, in priority order, if detection ever needs help:
 **Codittle desktop app**'s bundled `node.exe` to read its PGlite DB. No extra pip packages.
 
 ## 5. Python deps
-`pip install paramiko` (for the SSH tools).
+`pip install paramiko` (for the SSH tools). `pip install pyyaml` only if you use `import-tabby`.

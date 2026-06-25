@@ -17,6 +17,7 @@ blob written by one side is readable by the other. A CSV may be imported ONCE
 """
 import csv as _csv
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -269,6 +270,142 @@ def delete_local(label):
     n = c.execute("DELETE FROM environments WHERE label=?", (label,)).rowcount
     c.commit()
     c.close()
+    return n
+
+
+# ── other session sources: Tabby (YAML) and Termius (SQLite) ─────────────────
+def _port(v):
+    try:
+        return int(v)
+    except (ValueError, TypeError):
+        return 22
+
+
+def _dedupe(envs):
+    seen, out = set(), []
+    for e in envs:
+        k = (e["host"], e["user"], e["port"])
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(e)
+    return out
+
+
+def tabby_envs(path=None):
+    """SSH profiles from Tabby's config.yaml (handles modern `profiles:` and legacy
+    Terminus `ssh.connections:`). Metadata only — no passwords. Needs PyYAML."""
+    if path:
+        cfg = Path(path) if Path(path).is_file() else None
+    else:
+        cands = []
+        for base in (os.environ.get("APPDATA"), os.environ.get("XDG_CONFIG_HOME"),
+                     str(Path.home() / ".config")):
+            if base:
+                cands += [Path(base) / "tabby" / "config.yaml",
+                          Path(base) / "terminus" / "config.yaml"]
+        cfg = next((c for c in cands if c.is_file()), None)
+    if not cfg:
+        return []
+    try:
+        import yaml
+    except ImportError:
+        raise RuntimeError("Tabby import needs PyYAML  ->  pip install pyyaml")
+    try:
+        data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return []
+    out = []
+
+    def add(name, host, port, user):
+        if host:
+            out.append({"label": (name or host), "host": host, "port": _port(port),
+                        "user": user or "", "bnk": "", "source": "tabby"})
+
+    for p in (data.get("profiles") or []):              # modern Tabby
+        if isinstance(p, dict) and "ssh" in str(p.get("type", "")).lower():
+            o = p.get("options") or {}
+            add(p.get("name"), o.get("host"), o.get("port"), o.get("user"))
+    ssh = data.get("ssh") or {}                          # legacy Terminus / Tabby
+    for key in ("connections", "profiles", "recentProfiles"):
+        for c in (ssh.get(key) or []):
+            if isinstance(c, dict):
+                o = c.get("options") or c
+                add(c.get("name"), o.get("host"), o.get("port"), o.get("user"))
+    return _dedupe(out)
+
+
+_CIPHER = re.compile(r"^[A-Za-z0-9+/=]{24,}$")
+
+
+def _looks_host(v):
+    """True only for values that still look like a real hostname/IP (not encrypted gibberish)."""
+    return (isinstance(v, str) and 0 < len(v) <= 255
+            and bool(re.match(r"^[A-Za-z0-9._:-]+$", v))
+            and ("." in v or ":" in v or v.replace(".", "").isalnum())
+            and not (_CIPHER.match(v) and "." not in v and ":" not in v))
+
+
+def _plain(v):
+    return isinstance(v, str) and 0 < len(v) <= 64 and not (_CIPHER.match(v) and len(v) >= 24)
+
+
+def termius_envs(root=None):
+    """Best-effort read of Termius's local SQLite. Termius is END-TO-END ENCRYPTED, so host
+    fields are usually ciphertext — this returns only rows that still look like real hosts."""
+    if root:
+        root = Path(root)
+    else:
+        base = os.environ.get("APPDATA") or str(Path.home())
+        root = Path(base) / "Termius"
+        if not root.is_dir() and os.environ.get("LOCALAPPDATA"):
+            root = Path(os.environ["LOCALAPPDATA"]) / "Termius"
+    if not root or not root.is_dir():
+        return []
+    out = []
+    for db in list(root.rglob("*.db")) + list(root.rglob("*.sqlite")):
+        try:
+            c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+            c.row_factory = sqlite3.Row
+            tables = [r[0] for r in c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")]
+        except Exception:
+            continue
+        for t in tables:
+            if not re.search(r"host|server|connection", t, re.I):
+                continue
+            try:
+                rows = c.execute(f"SELECT * FROM {t}").fetchall()      # noqa: S608 - local read-only
+            except Exception:
+                continue
+            for r in rows:
+                d = {k.lower(): r[k] for k in r.keys()}
+                host = d.get("address") or d.get("host") or d.get("hostname") or d.get("ip")
+                if not _looks_host(host):
+                    continue
+                user = d.get("username") or d.get("user") or ""
+                out.append({"label": str(d.get("label") or d.get("name")
+                                         or d.get("title") or host)[:64],
+                            "host": host, "port": _port(d.get("port")),
+                            "user": user if _plain(str(user)) else "",
+                            "bnk": "", "source": "termius"})
+        c.close()
+    return _dedupe(out)
+
+
+def import_tabby():
+    n = 0
+    for e in tabby_envs():
+        add_local(e["label"], e["host"], e["port"], e["user"], None, e["bnk"])
+        n += 1
+    return n
+
+
+def import_termius():
+    n = 0
+    for e in termius_envs():
+        add_local(e["label"], e["host"], e["port"], e["user"], None, e["bnk"])
+        n += 1
     return n
 
 

@@ -6,6 +6,8 @@
   python t24_env.py passwd <label>       # key/replace a password (hidden)
   python t24_env.py remove <label>       # delete from the local store
   python t24_env.py import-codittle      # pull connection details from Codittle (no passwords)
+  python t24_env.py import-tabby         # pull SSH profiles from Tabby's config.yaml
+  python t24_env.py import-termius       # best-effort pull from Termius (often E2E-encrypted)
   python t24_env.py import servers.csv   # ONE-TIME seed from a CSV, then delete it
 
 Hosts resolve from the UNION of Amethyst's DB and the local encrypted DB, so both sides see
@@ -76,6 +78,26 @@ def cmd_import_codittle(_a):
     print("Key each password:  python t24_env.py passwd <label>")
 
 
+def cmd_import_tabby(_a):
+    try:
+        n = es.import_tabby()
+    except Exception as e:                    # noqa: BLE001 - surface any read/parse failure
+        sys.exit(f"Tabby import failed: {e}")
+    if not n:
+        sys.exit("no Tabby SSH profiles found (looked for %APPDATA%/tabby/config.yaml).")
+    print(f"imported {n} profile(s) from Tabby (metadata only — no passwords).")
+    print("Key each password:  python t24_env.py passwd <label>")
+
+
+def cmd_import_termius(_a):
+    n = es.import_termius()
+    if not n:
+        sys.exit("no readable Termius hosts found.  Termius is end-to-end encrypted, so host\n"
+                 "details on disk are usually ciphertext — add them via Tabby/Codittle or manually.")
+    print(f"imported {n} host(s) from Termius (metadata only — no passwords).")
+    print("Key each password:  python t24_env.py passwd <label>")
+
+
 def cmd_import(a):
     imported, skipped = es.import_csv(a.csv)
     print(f"imported {imported} env(s) into {es.standalone_db()} (skipped {skipped}); passwords sealed.")
@@ -92,10 +114,13 @@ def main():
     pw = sub.add_parser("passwd"); pw.add_argument("label")
     rm = sub.add_parser("remove"); rm.add_argument("label")
     sub.add_parser("import-codittle")
+    sub.add_parser("import-tabby")
+    sub.add_parser("import-termius")
     im = sub.add_parser("import"); im.add_argument("csv")
     a = ap.parse_args()
     {"list": cmd_list, "add": cmd_add, "passwd": cmd_passwd, "remove": cmd_remove,
-     "import-codittle": cmd_import_codittle, "import": cmd_import}[a.cmd](a)
+     "import-codittle": cmd_import_codittle, "import-tabby": cmd_import_tabby,
+     "import-termius": cmd_import_termius, "import": cmd_import}[a.cmd](a)
 
 
 if __name__ == "__main__":
