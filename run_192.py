@@ -9,10 +9,10 @@ TARGET = os.environ.get("T24_HOST", "")
 
 def main():
     command = sys.argv[1] if len(sys.argv) > 1 else "echo NO_COMMAND"
-    envs = t.load_environments("Test_Environments.csv")
+    envs = t.load_environments()
     match = [e for e in envs if e["host"] == TARGET]
     if not match:
-        sys.exit(f"{TARGET} not found in CSV")
+        sys.exit(f"{TARGET} not found in the env store (add it: python t24_env.py add)")
     env = match[0]
     print(f"# host={env['user']}@{env['host']}:{env['port']} bnk.run={env['bnk'] or '<none>'}")
     print(f"# command: {command}\n")

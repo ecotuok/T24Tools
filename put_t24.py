@@ -6,8 +6,7 @@ text mode) get CRLF/UTF-8 mangled ("Invalid or corrupt jarfile").  SFTP is
 always binary; this also md5-verifies the remote copy after upload.
 
 Usage:
-    python put_t24.py --env 30 --servers ./Test_Environments.csv \
-        local/myfile.jar "$T24_BNK_RUN/SOME.BP/myfile.jar"
+    python put_t24.py --env 30 local/myfile.jar "$T24_BNK_RUN/SOME.BP/myfile.jar"
     # optional: --mode 664
 NB: pass remote paths with MSYS_NO_PATHCONV=1 under Git-Bash.
 """
@@ -30,7 +29,7 @@ def md5_local(path):
 def main():
     ap = argparse.ArgumentParser(description="Binary SFTP upload to a T24 env, with md5 verify.")
     ap.add_argument("--env", required=True)
-    ap.add_argument("--servers", required=True)
+    ap.add_argument("--servers", default=None, help=argparse.SUPPRESS)  # deprecated: shared store
     ap.add_argument("--mode", default="664", help="chmod (octal) applied after upload, default 664")
     ap.add_argument("local")
     ap.add_argument("remote")
@@ -40,6 +39,8 @@ def main():
     if len(matches) != 1:
         sys.exit("env selector matched: " + ", ".join(e["label"] for e in matches))
     env = matches[0]
+    if not env.get("pass"):
+        sys.exit(f"no password for '{env['label']}' — run: python t24_env.py passwd \"{env['label']}\"")
     if not os.path.isfile(args.local):
         sys.exit("local file not found: %s" % args.local)
 

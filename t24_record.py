@@ -2,8 +2,7 @@
 """Dump a T24/jBASE record over SSH, attribute-marks rendered readable, reusing
 fetch_t24_sources for the connection + jBASE env loading.
 
-  python t24_record.py --env 30 --servers ".../Test_Environments.csv" \
-         --file F.VERSION "FUNDS.TRANSFER,MY.VERSION"
+  python t24_record.py --env 30 --file F.VERSION "FUNDS.TRANSFER,MY.VERSION"
 
 `CT` is a screen pager, so we feed it newlines to page through and strip the
 terminal escapes. FM(254)->newline, VM(253)->' | ', SM(252)->' ^ '.
@@ -22,7 +21,7 @@ ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b[()][AB012]|\x1b.")
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--env", required=True)
-    ap.add_argument("--servers", required=True)
+    ap.add_argument("--servers", default=None, help=argparse.SUPPRESS)  # deprecated: shared store
     ap.add_argument("--bnk", default=None, help="remote bnk.run (default: auto-detect per host)")
     ap.add_argument("--file", default="F.VERSION")
     ap.add_argument("--verb", default="CT", help="jBASE display verb (default CT)")
@@ -36,6 +35,8 @@ def main():
     m = ft.select_env(envs, args.env)
     if len(m) != 1:
         sys.exit("env selector matched: " + ", ".join(e["label"] for e in m))
+    if not m[0].get("pass"):
+        sys.exit(f"no password for '{m[0]['label']}' — run: python t24_env.py passwd \"{m[0]['label']}\"")
     client = ft.connect(m[0])
     bnk = ft.resolve_bnk(client, args.bnk, m[0]["bnk"])
 

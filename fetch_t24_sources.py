@@ -21,17 +21,16 @@ WHERE it lands:         <dest>/<BP>/<ROUTINE>
 If neither <ROUTINE> nor <ROUTINE>.b exists, the routine is SKIPPED (the source
 was never deployed or was removed -- only the compiled .so object remains).
 
-Server list + creds come from a CSV in t24_run.py's format; --env picks one row
-by label (e.g. ENV-01), last IP octet (e.g. 30) or full IP. Read-only on the server.
-Auth: password from the CSV (paramiko); host keys auto-accepted (test fleet).
+Environments + creds come from the shared store (Amethyst DB + local encrypted DB,
+unioned) via envstore; --env picks one by label (e.g. ENV-01), last IP octet (e.g. 30)
+or full IP. Read-only on the server. Passwords are DPAPI-sealed; host keys auto-accepted.
 
 Examples:
   # paste a JSHOW session
-  JSHOW -c FOO | python fetch_t24_sources.py --env 30 --servers Test_Environments.csv
+  JSHOW -c FOO | python fetch_t24_sources.py --env 30
 
   # or just name routines and let it discover the paths
-  python fetch_t24_sources.py --env 30 --servers Test_Environments.csv \
-         -r MY.ROUTINE -r OTHER.ROUTINE
+  python fetch_t24_sources.py --env 30 -r MY.ROUTINE -r OTHER.ROUTINE
 """
 import argparse
 import csv
@@ -46,6 +45,8 @@ try:
     import paramiko
 except ImportError:
     sys.exit("paramiko is not installed. Run:  pip install paramiko")
+
+import envstore
 
 DEFAULT_REMOTE_BASE = os.environ.get("T24_BNK_RUN", "/t24/bnk/bnk.run")
 CONNECT_TIMEOUT = 20
@@ -105,44 +106,10 @@ def resolve_bnk(client, explicit=None, csv_bnk=None):
     return explicit or csv_bnk or detect_bnk_run(client) or DEFAULT_REMOTE_BASE
 
 
-def load_environments(path):
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        rows = [r for r in csv.reader(f) if any(c.strip() for c in r)]
-    if not rows:
-        return []
-    headers = rows[0]
-    ci = {
-        "label": _find_col(headers, "label"),
-        "host":  _find_col(headers, "hostname/ip", "hostname / ip", "hostname", "host", "ip"),
-        "proto": _find_col(headers, "protocol", "proto"),
-        "port":  _find_col(headers, "port"),
-        "user":  _find_col(headers, "username", "user"),
-        "pass":  _find_col(headers, "password", "pass", "pwd"),
-        "bnk":   _find_col(headers, "bnk.run", "bnkrun", "bnk run", "path"),
-    }
-    if ci["host"] is None:
-        sys.exit("CSV has no recognizable Hostname/IP column.")
-
-    def cell(row, key):
-        idx = ci[key]
-        return row[idx].strip() if (idx is not None and idx < len(row)) else ""
-
-    envs = []
-    for row in rows[1:]:
-        if _norm(cell(row, "proto")) not in ("ssh", ""):
-            continue
-        host = cell(row, "host")
-        if not host:
-            continue
-        envs.append({
-            "label": cell(row, "label") or host,
-            "host":  host,
-            "port":  int(cell(row, "port") or 22),
-            "user":  cell(row, "user"),
-            "pass":  cell(row, "pass"),
-            "bnk":   cell(row, "bnk"),
-        })
-    return envs
+def load_environments(path=None):
+    """Environments come from the shared store (Amethyst DB + local encrypted DB, unioned) via
+    envstore — never a plaintext CSV. `path` is accepted for back-compat and ignored."""
+    return envstore.all_envs(reveal=True)
 
 
 def select_env(envs, selector):
@@ -165,6 +132,10 @@ def select_env(envs, selector):
 
 # ------------------------------- SSH / SFTP ----------------------------------
 def connect(env):
+    if not env.get("pass"):
+        lbl = env.get("label") or env.get("host")
+        raise ValueError(f"No password stored for '{lbl}'. Key it once:  "
+                         f'python t24_env.py passwd "{lbl}"')
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())  # trust-on-first-use test fleet
     client.connect(
@@ -245,8 +216,7 @@ def main():
     ap.add_argument("-r", "--routine", action="append", default=[], metavar="NAME",
                     help="routine name to discover via remote JSHOW and fetch (repeatable)")
     ap.add_argument("--routines-file", help="file with one routine name per line")
-    ap.add_argument("--servers", default="Test_Environments.csv",
-                    help="server CSV (default ./Test_Environments.csv)")
+    ap.add_argument("--servers", default=None, help=argparse.SUPPRESS)  # deprecated: envs come from the shared store
     ap.add_argument("--dest", default=".", help="local destination root (default: current dir)")
     ap.add_argument("--remote-base", default=None,
                     help="remote source root (default: per-host auto-detect; CSV bnk.run column or T24_BNK_RUN to override)")
@@ -273,9 +243,7 @@ def main():
         sys.exit("Nothing to fetch: give a JSHOW paste (--jshow/stdin) or routine names (-r).")
 
     # environment
-    if not os.path.isfile(args.servers):
-        sys.exit(f"Server CSV not found: {args.servers}")
-    envs = load_environments(args.servers)
+    envs = load_environments()
     matches = select_env(envs, args.env)
     if not matches:
         sys.exit(f"No environment matched --env {args.env!r}. Available: "

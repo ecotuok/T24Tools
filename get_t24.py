@@ -6,8 +6,7 @@ text-mode pulls through stdout suffer on Windows), and the local copy is
 md5-verified against the remote.
 
 Usage:
-    python get_t24.py --env 30 --servers ./Test_Environments.csv \
-        "$T24_BNK_RUN/SOME.BP/MY.ROUTINE" MY.ROUTINE.local
+    python get_t24.py --env 30 "$T24_BNK_RUN/SOME.BP/MY.ROUTINE" MY.ROUTINE.local
 NB: pass remote paths with MSYS_NO_PATHCONV=1 under Git-Bash.
 """
 import argparse
@@ -28,7 +27,7 @@ def md5_local(path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--env", required=True)
-    ap.add_argument("--servers", default="Test_Environments.csv")
+    ap.add_argument("--servers", default=None, help=argparse.SUPPRESS)  # deprecated: shared store
     ap.add_argument("remote")
     ap.add_argument("local")
     args = ap.parse_args()
@@ -37,6 +36,8 @@ def main():
     m = select_env(envs, args.env)
     if len(m) != 1:
         sys.exit("env selector matched: " + ", ".join(e["label"] for e in m))
+    if not m[0].get("pass"):
+        sys.exit(f"no password for '{m[0]['label']}' — run: python t24_env.py passwd \"{m[0]['label']}\"")
     client = connect(m[0])
     try:
         sftp = client.open_sftp()

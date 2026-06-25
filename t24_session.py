@@ -7,9 +7,9 @@ non-interactive `bash -s` channel open with jBASE already loaded, and exposes it
 on a local socket so each command is just a round-trip.
 
   # 1) start the daemon (background) — connects, loads jBASE once
-  #    a) from the CSV (label selector):
-  python t24_session.py serve --env ENV-01 --servers ./Test_Environments.csv --port 8765
-  #    b) from the amethyst DB (env id; password unsealed from DPAPI store):
+  #    a) by label (resolved from the shared env store):
+  python t24_session.py serve --env ENV-01 --port 8765
+  #    b) by Amethyst DB env id (password unsealed from the DPAPI store):
   python t24_session.py serve --env-id 19 --port 8765
 
   # 2) fire commands at it (cheap — reuses the live jBASE session)
@@ -20,7 +20,7 @@ on a local socket so each command is just a round-trip.
   python t24_session.py stop --port 8765
 
 Non-PTY bash => no pager, no ANSI. Attribute marks FM/VM/SM (254/253/252) are
-converted to \n / | / ^ unless --raw. Read-only intent; same creds source (CSV)
+converted to \n / | / ^ unless --raw. Read-only intent; same creds source (shared store)
 and jBASE env-load trick as the rest of the toolkit.
 """
 import argparse
@@ -131,7 +131,7 @@ def serve(args):
         env = env_from_db(args.amethyst, args.env_id)
     else:
         if not args.env:
-            sys.exit("provide either --env-id <n> (amethyst DB) or --env <label> (CSV)")
+            sys.exit("provide either --env-id <n> (Amethyst DB) or --env <label> (shared store)")
         envs = ft.load_environments(args.servers)
         m = ft.select_env(envs, args.env)
         if len(m) != 1:
@@ -218,12 +218,12 @@ def main():
     sub = ap.add_subparsers(dest="mode", required=True)
 
     sp = sub.add_parser("serve", help="connect once and listen for commands")
-    sp.add_argument("--env", help="CSV env label selector (with --servers)")
+    sp.add_argument("--env", help="env label selector (from the shared store)")
     sp.add_argument("--env-id", type=int, default=None,
                     help="amethyst DB environment id (resolves host/user/sealed-password)")
     sp.add_argument("--amethyst", default=DEFAULT_AMETHYST,
                     help="path to the amethyst app folder (default: sibling ../amethyst)")
-    sp.add_argument("--servers", default="Test_Environments.csv")
+    sp.add_argument("--servers", default=None, help=argparse.SUPPRESS)  # deprecated: shared store
     sp.add_argument("--bnk", default=None, help=f"remote bnk.run (default {DEFAULT_BNK})")
     sp.add_argument("--port", type=int, default=8765)
     sp.set_defaults(func=serve)

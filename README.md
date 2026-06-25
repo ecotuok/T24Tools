@@ -5,32 +5,36 @@ environments without hand-logging into each box: **fetch & inspect source**, rea
 records/VERSIONs, search the source tree, recover record exports, and **run a
 command across the whole fleet** at once.
 
-Everything is driven by one **servers CSV** and authenticates with the password from that
-CSV. Centralised here so we never rebuild it.
+Environments and credentials come from a **shared encrypted store** (see [SETUP.md](SETUP.md)):
+passwords are sealed with **Windows DPAPI** — never plaintext, never a CSV at rest. The store is
+the union of Amethyst's DB and a local standalone DB, so hosts added on either side are visible
+to both, and you can seed it straight from **Codittle**.
 
 ```
 t24-tools/
-├── Test_Environments.csv          ← servers + credentials (the shared config; gitignored)
+├── envstore.py                    ┐ shared env/credential store (DPAPI-sealed; union of
+│                                  ┘  Amethyst's DB + local DB; Codittle/CSV import)
+├── t24_env.py                     ← manage the store: list / add / passwd / import-codittle
 ├── .t24_cmd_library.tsv           ← saved commands for t24_run (local; gitignored)
 ├── fetch_t24_sources.py           ┐
 ├── grep_t24.py                    │ source fetch & inspection (paramiko)
-├── probe_t24.py                   │  — single env (--env), the others import fetch_t24_sources
+├── probe_t24.py                   │  — single env (--env); the others import fetch_t24_sources
 ├── t24_record.py                  │
-├── recover_jbase_tar.py           ┘ (local; recovers corrupt jBASE export tars)
-├── t24_run.py / .sh               ┐ multi-server command runner
-├── t24_run.cmd / _py.cmd          │  — run ONE command across MANY envs in parallel
-├── run_192.py                     ┘  (non-interactive single-host example)
+├── get_t24.py / put_t24.py        │  — binary SFTP download / upload with md5 verify
+├── ssh_cmd.py                     │  — one raw shell command on one env
+├── t24_session.py                 │  — persistent jBASE session (connect once, run many)
+├── recover_jbase_tar.py           ┘ (recovers corrupt jBASE export tars)
+├── t24_run.py / _py.cmd           ┐ multi-server command runner
+├── run_192.py                     ┘  — run ONE command across MANY envs (or one), in parallel
 ├── codittle_connections.py        ┐ Codittle connection inspector
 ├── codittle_connections.mjs       ┘  — reads the live Codittle database (no Codittle open needed)
 ├── codittle_db.py                 ┐ Codittle DB recovery — status / backup / restore
 └── codittle_db.mjs                ┘  — restore lost connections after a pgdata corruption
 ```
 
-> **Run the tools from this folder** so the default `Test_Environments.csv` resolves.
-> When fetching source, point `--dest` at your project. From elsewhere, pass
-> `--servers "<...>/t24-tools/Test_Environments.csv"`. The remote `bnk.run` is **auto-detected
-> per host** — override only if needed with `--bnk` / `--remote-base`, a CSV `bnk.run` column,
-> or `T24_BNK_RUN`.
+> The store resolves automatically wherever you run the tools from. `--env` selects a host by
+> **label**, **last IP octet**, or **full IP**. The remote `bnk.run` is **auto-detected per host**
+> — override only if needed with `--bnk` / `--remote-base` or `T24_BNK_RUN`.
 
 ---
 
@@ -38,56 +42,35 @@ t24-tools/
 
 | Tool | Scope | One-liner |
 |---|---|---|
+| **`t24_env.py`** | local | manage the env store (`list` / `add` / `passwd` / `import-codittle`) |
 | **`fetch_t24_sources.py`** | 1 env | pull jBASE source by JSHOW paste **or** routine name |
 | **`grep_t24.py`** | 1 env | remote `grep` over `*.BP` (`--find` = filename glob) |
 | **`probe_t24.py`** | 1 env | SFTP `stat`/`listdir` — does a path exist? |
 | **`t24_record.py`** | 1 env | dump a live record / VERSION (`LIST … ALL`) |
+| **`get_t24.py` / `put_t24.py`** | 1 env | binary SFTP download / upload, md5-verified |
+| **`t24_session.py`** | 1 env | persistent jBASE session — connect once, run many |
 | **`recover_jbase_tar.py`** | local | salvage members from a corrupt jBASE export tar |
-| **`t24_run.py`** (`.sh`/`.cmd`) | N envs | run one command across every SSH host, in parallel |
+| **`t24_run.py`** | N envs | run one command across every SSH host, in parallel |
 | **`run_192.py`** | 1 env | non-interactive example: run a command on a single host |
 | **`codittle_connections.py`** | local | list all Codittle SSH connections + live SSH status |
-| **`codittle_db.py`** | local | inspect / back up / **recover** Codittle's DB when it corrupts (lost connections) |
+| **`codittle_db.py`** | local | inspect / back up / **recover** Codittle's DB when it corrupts |
 
 ---
 
-## `codittle_db.py` — recover Codittle's connections after a DB corruption
+## Environments & credentials (the store)
 
-Codittle keeps connections + projects in a per-workspace **PGlite** DB
-(`%LOCALAPPDATA%\Codittle\workspaces\<id>\pgdata`). If it corrupts, Codittle quarantines it
-(`pgdata.corrupt-*`) and starts a **fresh empty** one — connections vanish from the UI but the
-data still lives in another workspace or a backup. This tool finds and restores it.
+Nothing is configured in a file you commit. Manage hosts with **`t24_env.py`** — see
+[SETUP.md](SETUP.md) for the full model. The fast path:
 
-```
-python codittle_db.py status                       # workspaces, the ACTIVE one, connection counts, corruption
-python codittle_db.py connections [--workspace ID]
-python codittle_db.py backup [--all]               # snapshot pgdata -> ../_codittle-db-backups/
-python codittle_db.py restore [--from ID|PATH] [--apply]
+```bash
+python t24_env.py import-codittle     # seed host/port/user from Codittle (no passwords)
+python t24_env.py passwd ENV-01       # key each password once (hidden, DPAPI-sealed)
+python t24_env.py list                # confirm — passwords are shown only as yes/--
 ```
 
-**To recover:** quit Codittle fully → `codittle_db.py status` (it names the workspace that still
-has connections) → `codittle_db.py restore --from <ws> --apply` → reopen Codittle. Safe by
-default: dry-run unless `--apply`, refuses to write while Codittle is open, backs up first.
-Passwords copy across encrypted; if one fails to auth, re-enter it.
-
----
-
-## Prerequisites
-- **Python 3.8+** and **paramiko** (`pip install paramiko`) — for every `*.py`.
-- `t24_run.sh` (the bash variant) instead needs **plink.exe** (PuTTY) on PATH.
-- **Network reach** to the env (corporate LAN / VPN — hosts are internal IPs).
-
-### Servers CSV (`Test_Environments.csv`)
-Header row required; columns matched by name:
-```
-Groups,Label,Tags,Hostname/IP,Protocol,Port,Username,Password[,bnk.run]
-Group/Example,ENV-01,"tags",<host-ip>,ssh,22,<user>,<password>
-```
-`--env` selects by **label** (`ENV-01`), **last IP octet**, or **full IP**.
-Remote `bnk.run` is **auto-detected per host** (via `$HOME`/`VOC`, else `/t24/*/bnk/bnk.run`);
-override with `--bnk` / `--remote-base`, a per-row `bnk.run` column, or `T24_BNK_RUN`. `t24_run`
-reads the CSV from the **current directory**.
-
-> **This CSV holds credentials — keep it out of version control** (it's gitignored here).
+Passwords are sealed with **Windows DPAPI** (per-user). The store is the union of Amethyst's DB
+(discovered via the `AMETHYST_DB` env var it registers) and a local standalone DB
+(`~/.t24tools/envs.db`, registered as `T24_ENV_DB`), so both apps see every host.
 
 > **Windows / Git-Bash:** native `python.exe` + Git-Bash rewrites `/t24/...` CLI args
 > into `C:\...`. Pass remote `/t24` paths (e.g. to `probe_t24.py`) only with
@@ -136,6 +119,13 @@ python t24_record.py --env 30 --file F.MY.PARAM <record-id>
 `--cmd` runs a literal jBASE command (best for VERSIONs). Default verb `CT` is a
 pager — the tool auto-pages + strips escapes; attribute marks → `\n`/` | `/` ^ `.
 
+### `get_t24.py` / `put_t24.py` — binary SFTP, md5-verified
+```bash
+python get_t24.py --env 30 "$T24_BNK_RUN/SOME.BP/MY.ROUTINE" MY.ROUTINE.local
+python put_t24.py --env 30 local/myfile.jar "$T24_BNK_RUN/SOME.BP/myfile.jar"
+```
+SFTP is binary-safe (no CRLF/encoding mangling), and both md5-verify the remote copy.
+
 ### `recover_jbase_tar.py` — salvage a corrupt export tar (local)
 T24 records exported via `COPY … TO <dir>` then tarred often corrupt after member 1.
 This scans every `ustar` header and rebuilds all members:
@@ -148,21 +138,28 @@ python recover_jbase_tar.py RECORDS.tar --grep MY.RECORD   # +FM attr index
 ## B. Multi-server command runner
 
 ### `t24_run.py` — run one command on every env (parallel)
-Interactive: reads the CSV (current dir), lets you pick/type a T24 verb or shell
+Interactive: resolves envs from the store, lets you pick/type a T24 verb or shell
 command, runs it on **all** SSH hosts at once (each: `cd bnk.run` → source a trimmed
 `.profile` so jBASE loads without the interactive login → run), prints per-host
 results and writes a `t24_results_<ts>.log`.
 ```bash
-cd <this folder>      # so Test_Environments.csv + .t24_cmd_library.tsv resolve
 python t24_run.py                 # interactive
 python t24_run.py -d              # diagnose mode (times connect / profile / command)
 python t24_run.py -t 120 -w 8     # per-host timeout 120s, 8 hosts at a time
 ```
-- `t24_run.sh` — same idea in bash (needs **plink**); `t24_run.cmd` / `t24_run_py.cmd`
-  launch the `.sh` / `.py` from a Windows cmd prompt.
+- `t24_run_py.cmd` launches `t24_run.py` from a Windows cmd prompt.
 - `run_192.py` — non-interactive example: `python run_192.py "JSHOW -c MY.ROUTINE"`
   runs one command on a single host (reuses `t24_run`'s logic). Set the target via the
   `T24_HOST` env var or edit the script.
+
+### `t24_session.py` — persistent jBASE session
+Connect once, keep jBASE loaded, fire many commands cheaply:
+```bash
+python t24_session.py serve --env ENV-01 --port 8765        # start the daemon
+python t24_session.py send  --port 8765 'LIST F.SOME.FILE WITH @ID LIKE "ABC..." ALL'
+python t24_session.py stop  --port 8765
+python t24_session.py envs                                   # list Amethyst DB env ids
+```
 
 ---
 
@@ -186,28 +183,8 @@ python codittle_connections.py --live          # only SSH-reachable servers
 python codittle_connections.py --json          # raw JSON — pipe to jq
 ```
 
-**Sample output:**
-```
-Probing SSH on N host(s)... done.
-
-Codittle stream connections  Bank: <bank>   Stream: R18/TAFC
-SSH reachable: N/N
-
-Name    Connection            SSH Home                  SSH  Last Used
-------  --------------------  ------------------------  ---  ---------
-ENV-01  <user>@<host-ip>:22   /t24/<inst>/bnk/bnk.run   UP   yesterday
-ENV-02  <user>@<host-ip>:22   /t24/<inst>/bnk/bnk.run   UP   never
-...
-
-Projects in this stream (N):
-  project-a
-  project-b
-  ...
-```
-
-**"Last Used"** reflects the last time a connection was opened in Codittle
-(the `last_viewed_at` field). `never` means it was added but not yet used from the
-Codittle UI — it may still be perfectly SSH-reachable.
+> Tip: `t24_env.py import-codittle` reuses this reader to seed the env store with the
+> connection metadata, so you add servers in Codittle once and just key the passwords.
 
 **How it works:**
 1. Locates Codittle's `node.exe` from the running process or `Downloads\Codittle_*\`.
@@ -221,6 +198,31 @@ Codittle UI — it may still be perfectly SSH-reachable.
 
 ---
 
+## D. `codittle_db.py` — recover Codittle's connections after a DB corruption
+
+Codittle keeps connections + projects in a per-workspace **PGlite** DB
+(`%LOCALAPPDATA%\Codittle\workspaces\<id>\pgdata`). If it corrupts, Codittle quarantines it
+(`pgdata.corrupt-*`) and starts a **fresh empty** one — connections vanish from the UI but the
+data still lives in another workspace or a backup. This tool finds and restores it.
+
+```
+python codittle_db.py status                       # workspaces, the ACTIVE one, connection counts
+python codittle_db.py connections [--workspace ID]
+python codittle_db.py backup [--all]               # snapshot pgdata -> ../_codittle-db-backups/
+python codittle_db.py restore [--from ID|PATH] [--apply]
+```
+
+**To recover:** quit Codittle fully → `codittle_db.py status` (it names the workspace that still
+has connections) → `codittle_db.py restore --from <ws> --apply` → reopen Codittle. Safe by
+default: dry-run unless `--apply`, refuses to write while Codittle is open, backs up first.
+
+---
+
+## Prerequisites
+- **Python 3.8+** and **paramiko** (`pip install paramiko`) — for the SSH tools.
+- **Network reach** to the env (corporate LAN / VPN — hosts are internal).
+- Manage environments with **`t24_env.py`** — see [SETUP.md](SETUP.md).
+
 ## Common workflows
 - **Pull a service + batch companions:** `grep_t24.py --find "<base>*"` → list
   `.LOAD/.SELECT/…`, then `fetch_t24_sources.py` (`-r` or JSHOW paste).
@@ -228,7 +230,6 @@ Codittle UI — it may still be perfectly SSH-reachable.
 - **Inspect a VERSION's hooks:** `t24_record.py --cmd 'LIST F.VERSION WITH @ID EQ "<APP>,<VER>" ALL'`
   → `INPUT.ROUTINE / VALIDATION.RTN / AUTH.ROUTINE / BEFORE.AUTH.RTN / CHECK.REC.RTN`.
 - **Same check across all envs:** `t24_run.py` with a `JSHOW -c <name>`.
-- **Recover dropped record history:** `recover_jbase_tar.py … --extract`.
 - **Pick an env for `--env`:** `codittle_connections.py --live` → shows only UP servers; use
   the last IP octet shown as the `--env` value for any other tool.
 
@@ -239,4 +240,5 @@ Codittle UI — it may still be perfectly SSH-reachable.
   source** — read their contract from the callers.
 - **Attribute marks** (FM/VM/SM = 0xFE/0xFD/0xFC) are invalid UTF-8 — convert them on
   the server *before* decoding (the tools do) or they're lost.
-- **Credentials** live in `Test_Environments.csv` — treat it as a secret; never commit it.
+- **Credentials** are DPAPI-sealed in the store — never in plaintext, never committed. A host
+  with no password yet shows `--` in `t24_env.py list`; key it with `t24_env.py passwd`.

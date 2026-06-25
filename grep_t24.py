@@ -3,8 +3,7 @@
 fetch_t24_sources for the connection. Loads the jBASE environment first so the
 PATH (grep, etc.) is available in the non-login shell.
 
-  python grep_t24.py --env 30 --servers ".../Test_Environments.csv" \
-         --dirs "*.BP" SOME.FIELD ANOTHER.FIELD THIRD.FIELD
+  python grep_t24.py --env 30 --dirs "*.BP" SOME.FIELD ANOTHER.FIELD THIRD.FIELD
 """
 import argparse
 import sys
@@ -17,7 +16,7 @@ PROFILE = '"$HOME/.profile"'
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--env", required=True)
-    ap.add_argument("--servers", required=True)
+    ap.add_argument("--servers", default=None, help=argparse.SUPPRESS)  # deprecated: shared store
     ap.add_argument("--bnk", default=None, help="remote bnk.run (default: auto-detect per host)")
     ap.add_argument("--dirs", default="*.BP", help="glob of dirs to search (default *.BP)")
     ap.add_argument("--max", type=int, default=40, help="max match lines shown per pattern")
@@ -31,6 +30,8 @@ def main():
     m = ft.select_env(envs, args.env)
     if len(m) != 1:
         sys.exit("env selector matched: " + ", ".join(e["label"] for e in m))
+    if not m[0].get("pass"):
+        sys.exit(f"no password for '{m[0]['label']}' — run: python t24_env.py passwd \"{m[0]['label']}\"")
     client = ft.connect(m[0])
     bnk = ft.resolve_bnk(client, args.bnk, m[0]["bnk"])
     try:

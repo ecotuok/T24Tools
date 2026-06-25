@@ -2,21 +2,18 @@
 """
 t24_run.py -- interactive multi-server command runner for T24 test environments.
 
-Reads a CSV of environments, then runs ONE command on every SSH host in parallel.
-On each host it:
-    1. cd's into that host's bnk.run path (from the CSV)
+Resolves environments from the shared store (Amethyst DB + local encrypted DB, unioned)
+via envstore, then runs ONE command on every SSH host in parallel. On each host it:
+    1. cd's into that host's bnk.run path (auto-detected, or stored per env)
     2. sources a trimmed .profile so PATH/env load WITHOUT the interactive jBASE
        login process:   . <(sed '/jpqn.*loginproc/,$d' "$HOME/.profile")
     3. runs your command
 
-CSV columns (header row required; order/spacing flexible, matched by name):
-    Groups, Label, Tags, Hostname/IP, Protocol, Port, Username, Password, bnk.run
-
-Auth: password from the CSV (paramiko). Host keys auto-accepted (test fleet).
+Manage environments with t24_env.py (add / passwd / import-codittle). Passwords are
+DPAPI-sealed; host keys auto-accepted (test fleet).
 Requires: Python 3.8+, paramiko  (pip install paramiko)
 """
 
-import csv
 import os
 import re
 import select
@@ -31,8 +28,9 @@ try:
 except ImportError:
     sys.exit("paramiko is not installed. Run:  pip install paramiko")
 
+import envstore
+
 # ------------------------------- tunables ------------------------------------
-DEFAULT_CSV       = "Test_Environments"     # base name tried first (.csv also tried)
 CMD_LIBRARY       = ".t24_cmd_library.tsv"  # saved labelled commands (label<TAB>command)
 CONNECT_TIMEOUT   = 15                       # TCP/auth connect timeout (seconds)
 CMD_TIMEOUT       = 60                        # hard cap per host for the command (seconds)
@@ -50,72 +48,10 @@ def clean(text: str) -> str:
     return ANSI_RE.sub("", text) if STRIP_ANSI else text
 
 
-# ============================ CSV / environments ==============================
-def _norm(s: str) -> str:
-    return (s or "").strip().lower()
-
-
-def _find_col(headers, *aliases):
-    norm = [_norm(h) for h in headers]
-    for a in aliases:
-        if a in norm:
-            return norm.index(a)
-    return None
-
-
-def load_environments(path):
-    """Return a list of dicts for SSH hosts only."""
-    hosts = []
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        reader = csv.reader(f)
-        rows = [r for r in reader if any(c.strip() for c in r)]
-    if not rows:
-        return hosts
-    headers = rows[0]
-    ci = {
-        "label": _find_col(headers, "label"),
-        "host":  _find_col(headers, "hostname/ip", "hostname / ip", "hostname", "host", "ip"),
-        "proto": _find_col(headers, "protocol", "proto"),
-        "port":  _find_col(headers, "port"),
-        "user":  _find_col(headers, "username", "user"),
-        "pass":  _find_col(headers, "password", "pass", "pwd"),
-        "bnk":   _find_col(headers, "bnk.run", "bnkrun", "bnk run", "path"),
-    }
-    if ci["host"] is None:
-        sys.exit("CSV has no recognizable Hostname/IP column.")
-
-    def cell(row, key):
-        idx = ci[key]
-        return row[idx].strip() if (idx is not None and idx < len(row)) else ""
-
-    for row in rows[1:]:
-        proto = _norm(cell(row, "proto"))
-        if proto not in ("ssh", ""):
-            continue  # skip RDP/HTTP/etc.
-        host = cell(row, "host")
-        if not host:
-            continue
-        hosts.append({
-            "label": cell(row, "label") or host,
-            "host":  host,
-            "port":  int(cell(row, "port") or 22),
-            "user":  cell(row, "user"),
-            "pass":  cell(row, "pass"),
-            "bnk":   cell(row, "bnk"),
-        })
-    return hosts
-
-
-def find_csv():
-    for cand in (DEFAULT_CSV, DEFAULT_CSV + ".csv"):
-        if os.path.isfile(cand):
-            return cand
-    print(f"Could not find '{DEFAULT_CSV}' (or '{DEFAULT_CSV}.csv') in {os.getcwd()}.")
-    while True:
-        name = input("Enter the CSV filename to use: ").strip().strip('"')
-        if name and os.path.isfile(name):
-            return name
-        print(f"  '{name}' not found — try again.")
+def load_environments(path=None):
+    """Hosts come from the shared store (Amethyst DB + local encrypted DB, unioned) via
+    envstore — never a plaintext CSV. `path` is accepted for back-compat and ignored."""
+    return envstore.all_envs(reveal=True)
 
 
 # ============================ command library =================================
@@ -222,7 +158,7 @@ def run_on_host(env, command, diagnose=False):
             allow_agent=False, look_for_keys=False,
         )
     except paramiko.AuthenticationException:
-        return ("FAILED", None, "authentication failed (check username/password in CSV)", timing)
+        return ("FAILED", None, "authentication failed (check stored creds: t24_env.py passwd)", timing)
     except (socket.timeout, TimeoutError):
         return ("TIMEOUT", None, f"could not connect within {CONNECT_TIMEOUT}s", timing)
     except paramiko.ssh_exception.NoValidConnectionsError:
@@ -333,11 +269,14 @@ def main():
     if args.workers:
         MAX_WORKERS = args.workers
 
-    csv_path = find_csv()
-    print(f"Using environment file: {csv_path}")
-    envs = load_environments(csv_path)
+    envs = load_environments()
     if not envs:
-        sys.exit("No SSH hosts parsed from the CSV. Check the header/columns.")
+        sys.exit("No environments. Add one:  python t24_env.py add   "
+                 "(or import:  python t24_env.py import-codittle).")
+    envs = [e for e in envs if e.get("pass")]
+    if not envs:
+        sys.exit("Environments exist but none have a password yet.  "
+                 "Key them:  python t24_env.py passwd <label>")
 
     print(f"\nParsed {len(envs)} SSH environment(s):")
     for i, e in enumerate(envs, 1):
@@ -383,11 +322,11 @@ def main():
                 print(indent(output))
             print(flush=True)
 
-    # write full log in CSV order
+    # write full log in input order
     with open(log_path, "w", encoding="utf-8") as lf:
         lf.write(f"T24 multi-server run - {ts}\n")
         lf.write(f"Command: {command}\n")
-        lf.write(f"CSV: {csv_path}   Hosts: {total}   Mode: {mode}\n")
+        lf.write(f"Hosts: {total}   Mode: {mode}\n")
         lf.write("=" * 64 + "\n")
         for e in envs:
             status, code, output, timing, _ = results[e["host"]]
