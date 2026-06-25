@@ -18,7 +18,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--env", required=True)
     ap.add_argument("--servers", required=True)
-    ap.add_argument("--bnk", default=ft.DEFAULT_REMOTE_BASE)
+    ap.add_argument("--bnk", default=None, help="remote bnk.run (default: auto-detect per host)")
     ap.add_argument("--dirs", default="*.BP", help="glob of dirs to search (default *.BP)")
     ap.add_argument("--max", type=int, default=40, help="max match lines shown per pattern")
     ap.add_argument("--files-only", action="store_true", help="list matching files, not lines")
@@ -32,12 +32,13 @@ def main():
     if len(m) != 1:
         sys.exit("env selector matched: " + ", ".join(e["label"] for e in m))
     client = ft.connect(m[0])
+    bnk = ft.resolve_bnk(client, args.bnk, m[0]["bnk"])
     try:
         if args.find:
             # pure bash globbing (no external find/ls — jBASE shadows PATH)
             globs = " ".join(f"{args.dirs}/{p}" for p in args.patterns)
             script = (
-                f'cd "{args.bnk}" || {{ echo "cannot cd {args.bnk}"; exit 3; }}\n'
+                f'cd "{bnk}" || {{ echo "cannot cd {bnk}"; exit 3; }}\n'
                 "shopt -s nullglob\n"
                 f"for f in {globs}; do echo \"$f\"; done | sort\n"
             )
@@ -48,7 +49,7 @@ def main():
         for pat in args.patterns:
             flag = "-rIlF" if args.files_only else "-rInHF"
             script = (
-                f'cd "{args.bnk}" || {{ echo "cannot cd {args.bnk}"; exit 3; }}\n'
+                f'cd "{bnk}" || {{ echo "cannot cd {bnk}"; exit 3; }}\n'
                 f". <(sed '/jpqn.*loginproc/,$d' {PROFILE}) 2>/dev/null\n"
                 f"grep {flag} -- '{pat}' {args.dirs} 2>/dev/null | head -n {args.max}\n"
             )

@@ -16,23 +16,24 @@ Group/Example,ENV-01,"tags",<host-ip>,ssh,22,<user>,<password>,/t24/<inst>/bnk/b
 - Add a per-row `bnk.run` column, or rely on the `T24_BNK_RUN` default below.
 - **Keep this file private** — it holds passwords.
 
-## 2. Remote path — `T24_BNK_RUN`
-Set the env var to your T24 `bnk.run` directory so the tools default to it (else they fall
-back to a generic `/t24/bnk/bnk.run`, which you'd override with `--bnk` each time):
+## 2. Remote path — auto-detected (usually nothing to do)
+`bnk.run` differs per environment (`t24mig`, `cbalive`, …). The tools **auto-detect each
+host's `bnk.run`** at connect time — they use `$HOME` if it holds a `VOC` (the T24 file
+dictionary), else search `/t24/*/bnk/bnk.run` for one — so you don't configure it per box.
+
+Overrides, in priority order, if detection ever needs help:
+1. `--bnk` / `--remote-base` on the command line,
+2. a per-row `bnk.run` column in `Test_Environments.csv`,
+3. the `T24_BNK_RUN` env var (last-resort default):
 
 ```bash
-# bash / Git-Bash
-export T24_BNK_RUN=/t24/<inst>/bnk/bnk.run
-```
-```powershell
-# PowerShell (persist for your user)
-setx T24_BNK_RUN "/t24/<inst>/bnk/bnk.run"
+export T24_BNK_RUN=/t24/<inst>/bnk/bnk.run     # optional fallback only
 ```
 
 ## 3. Optional env vars
 | Var | Used by | Purpose |
 |---|---|---|
-| `T24_BNK_RUN` | fetch / grep / probe / record / session | default remote `bnk.run` path |
+| `T24_BNK_RUN` | fetch / grep / record / session | last-resort `bnk.run` (only if per-host auto-detect fails) |
 | `T24_HOST` | `run_192.py` | the single host that script targets |
 | `T24_PROJECTS_ROOT` | `ctx_sync.py` | the Codittle `…/projects` dir (else auto-detected) |
 

@@ -28,8 +28,9 @@ t24-tools/
 
 > **Run the tools from this folder** so the default `Test_Environments.csv` resolves.
 > When fetching source, point `--dest` at your project. From elsewhere, pass
-> `--servers "<...>/t24-tools/Test_Environments.csv"`. Set `T24_BNK_RUN` to your remote
-> `bnk.run` path so the tools default to it (or pass `--bnk` / `--remote-base`).
+> `--servers "<...>/t24-tools/Test_Environments.csv"`. The remote `bnk.run` is **auto-detected
+> per host** — override only if needed with `--bnk` / `--remote-base`, a CSV `bnk.run` column,
+> or `T24_BNK_RUN`.
 
 ---
 
@@ -82,9 +83,9 @@ Groups,Label,Tags,Hostname/IP,Protocol,Port,Username,Password[,bnk.run]
 Group/Example,ENV-01,"tags",<host-ip>,ssh,22,<user>,<password>
 ```
 `--env` selects by **label** (`ENV-01`), **last IP octet**, or **full IP**.
-Remote bnk.run defaults to `$T24_BNK_RUN` (else a generic `/t24/bnk/bnk.run`); override with
-`--bnk` / `--remote-base`, or add a `bnk.run` column. `t24_run` reads the CSV from the
-**current directory**.
+Remote `bnk.run` is **auto-detected per host** (via `$HOME`/`VOC`, else `/t24/*/bnk/bnk.run`);
+override with `--bnk` / `--remote-base`, a per-row `bnk.run` column, or `T24_BNK_RUN`. `t24_run`
+reads the CSV from the **current directory**.
 
 > **This CSV holds credentials — keep it out of version control** (it's gitignored here).
 

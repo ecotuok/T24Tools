@@ -83,6 +83,28 @@ def _find_col(headers, *aliases):
     return None
 
 
+def detect_bnk_run(client):
+    """Find the live bnk.run on a host WITHOUT hardcoding the instance (t24mig / cbalive / …):
+    use $HOME if it holds a VOC (the T24 file dictionary), else search /t24/*/bnk/bnk.run for
+    a dir that has a VOC. Returns the path or None."""
+    if client is None:
+        return None
+    cmd = ('if [ -d "$HOME/VOC" ]; then echo "$HOME"; '
+           'else for d in /t24/*/bnk/bnk.run; do [ -d "$d/VOC" ] && { echo "$d"; break; }; done; fi')
+    try:
+        _in, out, _err = client.exec_command(cmd, timeout=EXEC_TIMEOUT)
+        lines = out.read().decode("utf-8", "replace").strip().splitlines()
+        cand = lines[0].strip() if lines else ""
+        return cand if cand.startswith("/") else None
+    except Exception:
+        return None
+
+
+def resolve_bnk(client, explicit=None, csv_bnk=None):
+    """Per-host bnk.run: explicit flag > CSV column > auto-detect on host > generic default."""
+    return explicit or csv_bnk or detect_bnk_run(client) or DEFAULT_REMOTE_BASE
+
+
 def load_environments(path):
     with open(path, newline="", encoding="utf-8-sig") as f:
         rows = [r for r in csv.reader(f) if any(c.strip() for c in r)]
@@ -227,7 +249,7 @@ def main():
                     help="server CSV (default ./Test_Environments.csv)")
     ap.add_argument("--dest", default=".", help="local destination root (default: current dir)")
     ap.add_argument("--remote-base", default=None,
-                    help=f"remote source root (default: env bnk.run, else {DEFAULT_REMOTE_BASE})")
+                    help="remote source root (default: per-host auto-detect; CSV bnk.run column or T24_BNK_RUN to override)")
     ap.add_argument("--dry-run", action="store_true",
                     help="show the plan; for name mode this still SSH-execs JSHOW (read-only) but downloads nothing")
     args = ap.parse_args()
@@ -262,10 +284,7 @@ def main():
         sys.exit(f"--env {args.env!r} is ambiguous: "
                  + ", ".join(f"{e['label']}({e['host']})" for e in matches))
     env = matches[0]
-    base = args.remote_base or env["bnk"] or DEFAULT_REMOTE_BASE
-
     print(f"# target : {env['label']}  {env['user']}@{env['host']}:{env['port']}")
-    print(f"# remote : {base}/<BP>/<ROUTINE>[.b]")
     print(f"# dest   : {os.path.abspath(args.dest)}{os.sep}<BP>{os.sep}<ROUTINE>")
 
     # connect if we need the server (name discovery, or any real download)
@@ -277,9 +296,13 @@ def main():
         except paramiko.AuthenticationException:
             sys.exit("Authentication failed (check username/password in CSV).")
         except (socket.timeout, TimeoutError):
-            sys.exit(f"Connect timed out after {CONNECT_TIMEOUT}s (on the bank network / VPN?).")
+            sys.exit(f"Connect timed out after {CONNECT_TIMEOUT}s (on the network / VPN?).")
         except Exception as e:
             sys.exit(f"Connect failed for {env['host']}: {e}")
+
+    # per-host bnk.run: explicit flag > CSV column > auto-detect on host > generic default
+    base = resolve_bnk(client, args.remote_base, env["bnk"])
+    print(f"# remote : {base}/<BP>/<ROUTINE>[.b]")
 
     # discover name-mode routines via remote JSHOW
     pairs = list(pairs_from_text)

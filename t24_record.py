@@ -23,7 +23,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--env", required=True)
     ap.add_argument("--servers", required=True)
-    ap.add_argument("--bnk", default=ft.DEFAULT_REMOTE_BASE)
+    ap.add_argument("--bnk", default=None, help="remote bnk.run (default: auto-detect per host)")
     ap.add_argument("--file", default="F.VERSION")
     ap.add_argument("--verb", default="CT", help="jBASE display verb (default CT)")
     ap.add_argument("--pages", type=int, default=30, help="newlines fed to page the pager")
@@ -37,6 +37,7 @@ def main():
     if len(m) != 1:
         sys.exit("env selector matched: " + ", ".join(e["label"] for e in m))
     client = ft.connect(m[0])
+    bnk = ft.resolve_bnk(client, args.bnk, m[0]["bnk"])
 
     if args.cmd:
         command = args.cmd
@@ -48,7 +49,7 @@ def main():
     feed = "for i in $(eval echo {1.." + str(args.pages) + "}); do echo; done | "
     conv = "" if args.raw else r" | tr '\376\375\374' '\n|^'"
     script = (
-        f'cd "{args.bnk}" || {{ echo "cannot cd {args.bnk}"; exit 3; }}\n'
+        f'cd "{bnk}" || {{ echo "cannot cd {bnk}"; exit 3; }}\n'
         f". <(sed '/jpqn.*loginproc/,$d' {PROFILE}) 2>/dev/null\n"
         f"{feed}{command}{conv}\n"
     )

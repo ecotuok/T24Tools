@@ -137,7 +137,13 @@ def serve(args):
         if len(m) != 1:
             sys.exit("env selector matched: " + ", ".join(e["label"] for e in m) or "nothing")
         env = m[0]
-    bnk = args.bnk or env.get("bnk") or DEFAULT_BNK
+    bnk = args.bnk or env.get("bnk")
+    if not bnk:                       # auto-detect the per-host bnk.run (t24mig / cbalive / …)
+        try:
+            _c = ft.connect(env); bnk = ft.detect_bnk_run(_c); _c.close()
+        except Exception:
+            pass
+    bnk = bnk or DEFAULT_BNK
     print(f"# connecting {env['user']}@{env['host']} ({env['label']}) bnk={bnk} ...", flush=True)
     client, chan, banner = open_shell(env, bnk)
     print(f"# jBASE loaded. listening on 127.0.0.1:{args.port}", flush=True)
