@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# T24 run artifacts (root-level dumps from tool runs: records, versions, profiles, logs)
+/*.txt
+/*.log
+/*.raw
+/*.edited
+
+# Secrets / fleet config (credentials — never commit)
+/Test_Environments.csv
+/.t24_cmd_library.tsv
+*.pem
+*.key
+
+# Internal design notes / findings — kept local, not published
+docs/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vs/
+.idea/
+*.swp
+
+# Build
+dist/
+build/
+*.o
+*.obj
