@@ -26,6 +26,7 @@ Severity: **P0** data-loss / silent · **P1** major reliability · **P2** qualit
 | 11 | No built-in recovery/diagnostics (`codittle doctor`) | **P2** |
 | 12 | Desktop shell panic-crashes (0xc0000409) instead of recovering a dead backend | **P1** |
 | 13 | Sidecar runs on system Node from PATH, not the bundled runtime | **P1** |
+| 14 | "Frozen-but-open" window: renderer hangs mid-activation, no watchdog (backend healthy) | **P1** |
 
 ---
 
@@ -158,6 +159,48 @@ installed version.
 **Proposal.** Always spawn the sidecar (and the Theia backend) with the **bundled**
 `node.exe` resolved relative to the executable; fall back to PATH only if the bundle is
 missing, and log which runtime was chosen.
+
+### 14. "Frozen-but-open" window: renderer hangs mid-activation, no watchdog
+**Problem.** The window can wedge completely — unresponsive, status bar frozen on
+"Activating Git Base (built-in)" — while the backend is **perfectly healthy**. Unlike item 12
+(backend dies, shell panics), nothing here crashes: the frontend renderer's single JS thread
+stops pumping mid-activation and never recovers. The app's only self-heal
+(reconnect-on-disconnect) never fires, because nothing disconnected. The status text is a red
+herring — it's just the last frame the frozen renderer painted, not a real git operation.
+**Evidence.** Portable 0.6.0: window frozen on "Activating Git Base". Live process inspection
+showed the backend node (child of `codittle-desktop.exe`) answering **HTTP 200 in 6.6 ms**;
+the frontend↔backend WebSocket still **`ESTABLISHED`** (renderer `msedgewebview2.exe` ↔ node,
+via `netstat -ano`); `git 2.55.0` on PATH; and the opened workspace had **no `.git`** and
+**no `index.lock`** — git had nothing to activate against, and no `git.exe` child existed.
+Recovery required an external `taskkill /T` of the shell tree + relaunch; a fresh backend came
+up on a new port and the window loaded normally.
+**Impact.** Total loss of the session with **no in-app affordance to recover** — the user must
+know to kill a process tree from the OS. And because the backend is a **child of the shell**
+(confirmed via `ParentProcessId`), even an external "restart just the frontend" is impossible:
+any recovery also kills the backend and its live SSH sessions.
+**Root cause — why it can't self-heal:**
+- Reconnect logic triggers only on socket **close** / heartbeat-timeout; a live-but-idle
+  socket + a never-resolving activation promise triggers **neither**.
+- The reconnect/watchdog code runs on the **same single JS thread that is frozen**, so it
+  cannot rescue itself.
+- Extension activation has **no timeout** — a stuck `activate()` pends forever, silently
+  gating first paint.
+**Proposal.**
+- **Out-of-thread liveness watchdog + app-level heartbeat.** Have the Tauri host (a separate,
+  non-frozen process) ping the renderer and expect a pong within a deadline; N missed pongs on
+  a still-open socket = hang → host force-reloads the WebView. This distinguishes a *hang* from
+  a *disconnect* and turns a permanent freeze into a bounded auto-reload.
+- **Timeout on extension activation**, and make git activation **lazy/non-blocking** so a
+  built-in can never gate first paint.
+- **Host-drawn recovery overlay** ("Reload window / Restart backend") when a hang is detected,
+  so recovery never depends on the frozen renderer or an OS-level process kill. Subscribe to
+  WebView2 unresponsiveness / `ProcessFailed` signals to detect it at the host.
+- Consider **supervising the backend independently of the shell** so the frontend can be
+  recycled (true "replug") without dropping backend SSH sessions.
+
+Cross-reference: complements **item 12** — that item is *backend-death → shell panic*; this is
+the inverse (*backend healthy → frontend hangs*). Common theme: the app has no watchdog that
+recovers a wedged component.
 
 ---
 
