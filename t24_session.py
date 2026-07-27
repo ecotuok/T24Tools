@@ -175,8 +175,13 @@ def serve(args):
                 t0 = time.monotonic()
                 out = run_command(chan, line, raw=raw)
                 dt = time.monotonic() - t0
-                conn.sendall(out.encode("utf-8", "replace"))
-                print(f"# ran ({dt:.1f}s): {line[:70]}", flush=True)
+                try:
+                    conn.sendall(out.encode("utf-8", "replace"))
+                except OSError as e:
+                    # client gave up (timeout/kill) — don't let a dead client kill the session
+                    print(f"# client gone ({dt:.1f}s, {e}): {line[:70]}", flush=True)
+                else:
+                    print(f"# ran ({dt:.1f}s): {line[:70]}", flush=True)
     finally:
         try:
             chan.sendall(b"exit\n")
