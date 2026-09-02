@@ -27,6 +27,7 @@ Severity: **P0** data-loss / silent · **P1** major reliability · **P2** qualit
 | 12 | Desktop shell panic-crashes (0xc0000409) instead of recovering a dead backend | **P1** |
 | 13 | Sidecar runs on system Node from PATH, not the bundled runtime | **P1** |
 | 14 | "Frozen-but-open" window: renderer hangs mid-activation, no watchdog (backend healthy) | **P1** |
+| 15 | Claude-updater patch anchors use `\w+` — `$`-aliases in newer minified bundles cause false drift, updates held back | **P2** |
 
 ---
 
@@ -236,6 +237,35 @@ re-encrypt portably.
 **Problem.** Diagnosing the above required reverse-engineering the PGlite layout.
 **Proposal.** Ship `codittle doctor` / `--export` / `--repair`: list workspaces + DB health,
 back up/restore `pgdata`, export connections, rebuild graphs from disk.
+
+### 15. Claude-updater patch anchors use `\w+` — `$`-aliases cause false drift, updates held back
+**Problem.** The Claude Code auto-updater (`theia/scripts/claude-updater.mjs`) is correctly
+fail-closed: it re-applies the IDE's compatibility patches
+(`theia/scripts/patch-claude-image-open.mjs`) to every freshly downloaded VSIX and holds the
+update back if any anchor drifts. But the anchor regexes capture minified identifier aliases
+with `(\w+)`, and `\w` does not match `$`. The moment upstream's minifier emits a
+`$`-containing alias (e.g. `T$`) at an anchor site, a **structurally unchanged** bundle
+reports `drift(0)` and the update is held until someone hand-edits the script.
+**Evidence.** 2026-09-02: Settings showed *"Claude 2.1.258 held back: patch anchors drifted
+(img=ok, imgClick=drift(0), ctrlA=ok)"*. Grep of the downloaded 2.1.258 `extension.js`
+showed the click-handler shape byte-for-byte identical to the anchor —
+`T$.commands.executeCommand("revealInExplorer",X);return}}catch{}T$.window.showTextDocument(X).then`
+— failing only because the alias is `T$`. Widening the identifier class made the old regex
+match 0 times and the new one exactly 1 (the count the patcher requires); a dry-run of
+`applyToExtensionDir` over the unpacked bundle then returned `ok:true`.
+**Impact.** Updates of the embedded assistant stall on a false positive; the user stays on an
+aging build until a developer manually re-patches. Each such hold also burns the ~100 MB
+download once per day. The trip-wire is meant to catch *real* refactors — false drifts erode
+trust in it.
+**Proposal.**
+- Widen every identifier capture in the anchor regexes from `(\w+)` to `([\w$]+)`
+  (backreferences and replacement callbacks are unaffected). **Applied downstream
+  2026-09-02** to the installed script (both `IMG_ANCHOR` and `CLICK_ANCHOR`), verified
+  against the real 2.1.258 VSIX; needs the same two-line change in the Codittle repo so the
+  next release doesn't regress it.
+- Longer term: on `held-drift`, log a context window around the nearest literal (e.g.
+  `"revealInExplorer"`) into the state file, so the next anchor fix doesn't require
+  re-downloading and hand-grepping the bundle.
 
 ---
 
