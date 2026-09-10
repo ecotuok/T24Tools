@@ -28,6 +28,7 @@ Severity: **P0** data-loss / silent · **P1** major reliability · **P2** qualit
 | 13 | Sidecar runs on system Node from PATH, not the bundled runtime | **P1** |
 | 14 | "Frozen-but-open" window: renderer hangs mid-activation, no watchdog (backend healthy) | **P1** |
 | 15 | Claude-updater patch anchors use `\w+` — `$`-aliases in newer minified bundles cause false drift, updates held back | **P2** |
+| 16 | Built-in screenshot (capture overlay) deadlocks the desktop shell — sync Tauri command does grab/OCR + window ops on the main thread | **P1** |
 
 ---
 
@@ -202,6 +203,64 @@ any recovery also kills the backend and its live SSH sessions.
 Cross-reference: complements **item 12** — that item is *backend-death → shell panic*; this is
 the inverse (*backend healthy → frontend hangs*). Common theme: the app has no watchdog that
 recovers a wedged component.
+
+### 16. Built-in screenshot (capture overlay) deadlocks the desktop shell
+**Problem.** Taking a screenshot with Codittle's own capture tool freezes the **entire desktop
+shell** (window title `CodittleX`, Windows flags it *Not Responding*). Nothing crashes and no
+capture is written; the app simply stops repainting and never comes back. Third variant of the
+"wedged component, no watchdog" family (items 12, 14): here the *host* (Tauri main thread)
+is the one that hangs, so even the host-side watchdog proposed in item 14 would not fire.
+**Evidence.** 2026-09-10, installed build of 2026-09-08 (`%LOCALAPPDATA%\Codittle`):
+- `codittle-desktop.exe` PID 26924 **Not Responding**; CPU counters flat across two samples a
+  minute apart (kernel 415.94s → 416.25s, user unchanged) — **idle-blocked, not spinning**.
+- Every child healthy: API sidecar `:53083/health` → **200 in 8 ms**, Theia backend `:65302`
+  → 200, `msedgewebview2.exe` alive, workspace `ssh-audit.jsonl` still being appended.
+- `%LOCALAPPDATA%\CodittleData\captures\` **empty** — the hang is mid-capture, before save.
+- No crash dump, no Application-Hang event, no host log to consult.
+- The shell binary's Tauri command table for this feature (strings from the exe):
+  `open_capture_overlay` · `close_capture_overlay` · `capture_region` · `ocr_region` ·
+  `get_capture` · `discard_capture` · `copy_capture` · `ocr_capture` · `ocr_capture_layout` ·
+  `save_capture_to` · `save_capture_to_inbox` · `save_capture_as` · `set_capture_shortcut`.
+**Impact.** Total loss of the session from a routine action; recovery is an OS-level
+`taskkill /PID <shell> /F` + relaunch, which (per item 14) also tears down the backend and
+its live SSH sessions. Users learn to avoid the feature and reach for Win+Shift+S instead.
+**Root cause (inferred — source not on this machine).** The classic Tauri-on-Windows
+deadlock: window operations (create/close/show/set-bounds) are serviced by the main thread's
+event loop, and a **synchronous** `#[tauri::command]` runs *on* that thread. The capture
+flow opens a full-screen overlay window, then a sync `capture_region`/`ocr_region` does the
+screen grab and OCR inline **and** closes the overlay from inside the command — the main
+thread ends up waiting on a window op that only it can process. Symptoms match exactly:
+idle-blocked host, healthy children, nothing written.
+**Proposal.**
+- **Make every capture command `async`.** Tauri runs async commands on its own pool, so
+  window ops issued from them are *dispatched* to the main loop instead of awaited from it.
+  Same for `open_capture_overlay`, whose `WebviewWindowBuilder::build()` can deadlock from a
+  sync command on Windows. Better still: pre-create the overlay at startup and show/hide it.
+- **Move the grab and the OCR into `tauri::async_runtime::spawn_blocking`** — they are
+  CPU-heavy and must never run on the UI thread.
+- **Order: overlay emits rect → overlay hidden → grab → OCR → return result → close
+  overlay** (or let the front end call `close_capture_overlay` after the result lands).
+  Hiding before grabbing also stops the tool screenshotting its own overlay.
+- **Bound it.** Wrap grab+OCR in `tokio::time::timeout`; on expiry close the overlay and
+  `show_toast` an error instead of wedging. Consider running OCR out-of-process (the Node
+  sidecar already exists) so an OCR library fault cannot take the host down.
+- **Regression test.** Trigger `capture_region` with OCR on a large monitor while the main
+  window is visible and assert the front end can still `invoke('sidecar_port')` mid-capture.
+
+Sketch of the fixed command:
+```rust
+#[tauri::command]
+async fn capture_region(app: AppHandle, rect: Rect) -> Result<Capture, String> {
+    let cap = tauri::async_runtime::spawn_blocking(move || grab_and_ocr(rect))
+        .await.map_err(|e| e.to_string())??;
+    if let Some(w) = app.get_webview_window("capture-overlay") { let _ = w.close(); }
+    Ok(cap)
+}
+```
+
+Cross-reference: **item 12** (backend dies → shell panics), **item 14** (renderer hangs →
+host healthy), **this** (host hangs → everything else healthy). The one watchdog that covers
+all three is an *external* supervisor, not code inside any single process.
 
 ---
 
