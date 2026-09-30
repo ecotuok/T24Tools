@@ -3,7 +3,8 @@
 codittle_db.py -- inspect / back up / RECOVER Codittle's embedded PGlite database.
 
 Codittle stores SSH connections (and projects) in a per-workspace PGlite database at
-  %LOCALAPPDATA%\\Codittle\\workspaces\\<id>\\pgdata
+  %LOCALAPPDATA%\\CodittleData\\workspaces\\<id>\\pgdata   (installed builds)
+  %LOCALAPPDATA%\\Codittle\\workspaces\\<id>\\pgdata       (older builds -- still scanned)
 If that DB corrupts, Codittle quarantines it as `pgdata.corrupt-<ts>` and starts a
 FRESH EMPTY one -> your connections vanish from the UI even though the data still
 exists in another workspace (or a backup). This tool finds it and puts it back.
@@ -33,7 +34,8 @@ from pathlib import Path
 
 import codittle_connections as cc   # reuse the Codittle node.exe finder
 
-WS = Path(os.environ.get("LOCALAPPDATA", "")) / "Codittle" / "workspaces"
+# Installed builds moved workspaces to CodittleData\ — keep the old root as a restore source.
+WORKSPACE_ROOTS = [Path(os.environ.get("LOCALAPPDATA", "")) / d / "workspaces" for d in ("CodittleData", "Codittle")]
 MJS = Path(__file__).resolve().parent / "codittle_db.mjs"
 BACKUPS = Path(__file__).resolve().parents[1] / "_codittle-db-backups"   # DevTools/_codittle-db-backups
 
@@ -79,8 +81,9 @@ def _resolve_pgdata(ref):
         return str(p)
     if (p / "pgdata").is_dir():
         return str(p / "pgdata")
-    if (WS / ref / "pgdata").is_dir():
-        return str(WS / ref / "pgdata")
+    for root in WORKSPACE_ROOTS:
+        if (root / ref / "pgdata").is_dir():
+            return str(root / ref / "pgdata")
     if p.is_dir():
         subs = list(p.glob("*-pgdata")) or list(p.glob("*/pgdata"))
         if subs:
@@ -91,12 +94,12 @@ def _resolve_pgdata(ref):
 # ── commands ────────────────────────────────────────────────────────────────
 def cmd_status(_):
     st = _status()
-    print(f"workspaces: {WS}\n")
+    print("workspaces: " + "  |  ".join(str(r) for r in WORKSPACE_ROOTS) + "\n")
     for w in st:
         tag = "ACTIVE" if w.get("active") else "  --  "
         conn = w["connections"] if w["connections"] >= 0 else "UNREADABLE(corrupt)"
         corr = f"  corrupt-snapshots={len(w['corrupt_snapshots'])}" if w["corrupt_snapshots"] else ""
-        print(f"[{tag}] {w['workspace']}  connections={conn}  projects={w['projects']}{corr}")
+        print(f"[{tag}] {w['workspace']}  connections={conn}  projects={w['projects']}{corr}  ({w['root']})")
     a = _active(st)
     if a and (a["connections"] or 0) == 0:
         src = _best_source(st)

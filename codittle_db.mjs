@@ -17,7 +17,10 @@ const execBase  = 'file:///' + process.execPath.replace(/\\/g, '/');
 const pgliteUrl = new URL('./sidecar/node_modules/@electric-sql/pglite/dist/index.js', execBase).href;
 const { PGlite } = await import(pgliteUrl);
 
-const WORKSPACES = join(process.env['LOCALAPPDATA'] ?? '', 'Codittle', 'workspaces');
+// Installed builds moved workspaces from Codittle\ to CodittleData\ — scan both so a
+// restore can still source connections from a workspace left behind in the old root.
+const WORKSPACE_ROOTS = ['CodittleData', 'Codittle']
+  .map(dir => join(process.env['LOCALAPPDATA'] ?? '', dir, 'workspaces'));
 
 function openCopy(pgdata) {
   const copyDir = join(tmpdir(), 'cdb-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7));
@@ -41,13 +44,15 @@ const action = process.argv[2];
 
 if (action === 'status') {
   const out = [];
-  for (const name of (existsSync(WORKSPACES) ? readdirSync(WORKSPACES) : [])) {
-    const pg = join(WORKSPACES, name, 'pgdata');
-    if (!existsSync(pg)) continue;
-    const corrupt = readdirSync(join(WORKSPACES, name)).filter(n => n.startsWith('pgdata.corrupt'));
-    const { envs, projects } = await countWs(pg);
-    out.push({ workspace: name, pgdata: pg, mtime: statSync(pg).mtimeMs,
-               connections: envs, projects, corrupt_snapshots: corrupt });
+  for (const root of WORKSPACE_ROOTS) {
+    for (const name of (existsSync(root) ? readdirSync(root) : [])) {
+      const pg = join(root, name, 'pgdata');
+      if (!existsSync(pg)) continue;
+      const corrupt = readdirSync(join(root, name)).filter(n => n.startsWith('pgdata.corrupt'));
+      const { envs, projects } = await countWs(pg);
+      out.push({ workspace: name, root, pgdata: pg, mtime: statSync(pg).mtimeMs,
+                 connections: envs, projects, corrupt_snapshots: corrupt });
+    }
   }
   out.sort((a, b) => b.mtime - a.mtime);
   if (out.length) out[0].active = true;          // Codittle uses the most-recent pgdata

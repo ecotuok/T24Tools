@@ -22,27 +22,24 @@ const pgliteUrl = new URL('./sidecar/node_modules/@electric-sql/pglite/dist/inde
 const { PGlite } = await import(pgliteUrl);
 
 // ── Locate the active pgdata directory ────────────────────────────────────
-const workspacesDir = join(
-  process.env['LOCALAPPDATA'] ?? '',
-  'Codittle', 'workspaces'
-);
+// Installed builds moved workspaces from Codittle\ to CodittleData\ — search both.
+const workspaceRoots = ['CodittleData', 'Codittle']
+  .map(dir => join(process.env['LOCALAPPDATA'] ?? '', dir, 'workspaces'));
 
-function findPgdata(wsDir) {
-  if (!existsSync(wsDir)) return null;
-  const candidates = readdirSync(wsDir)
-    .map(name => ({ name, path: join(wsDir, name, 'pgdata') }))
-    .filter(c => existsSync(c.path));
+function findPgdata(roots) {
+  const candidates = roots
+    .filter(root => existsSync(root))
+    .flatMap(root => readdirSync(root).map(name => join(root, name, 'pgdata')))
+    .filter(path => existsSync(path));
   if (candidates.length === 0) return null;
-  // Prefer the most recently modified workspace
-  candidates.sort((a, b) =>
-    statSync(b.path).mtimeMs - statSync(a.path).mtimeMs
-  );
-  return candidates[0].path;
+  // Prefer the most recently modified workspace — the one Codittle is using
+  candidates.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+  return candidates[0];
 }
 
-const pgdata = findPgdata(workspacesDir);
+const pgdata = findPgdata(workspaceRoots);
 if (!pgdata) {
-  process.stderr.write('ERROR: no Codittle pgdata found under ' + workspacesDir + '\n');
+  process.stderr.write('ERROR: no Codittle pgdata found under ' + workspaceRoots.join(' or ') + '\n');
   process.exit(1);
 }
 

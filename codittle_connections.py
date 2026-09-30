@@ -27,6 +27,12 @@ from pathlib import Path
 def _find_codittle_node() -> Path | None:
     """Return path to Codittle's bundled node.exe, or None if not found."""
 
+    # 0. The installer's location — checked first because wmic (step 1) is gone from
+    #    current Windows 11 builds, which left an installed-only machine with no match.
+    installed = Path(os.environ.get('LOCALAPPDATA', '')) / 'Codittle' / 'node.exe'
+    if installed.exists():
+        return installed
+
     # 1. Check the running codittle-desktop.exe process for its location
     try:
         out = subprocess.check_output(
