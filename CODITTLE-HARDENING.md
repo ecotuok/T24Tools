@@ -29,13 +29,15 @@ Severity: **P0** data-loss / silent · **P1** major reliability · **P2** qualit
 | 14 | "Frozen-but-open" window: renderer hangs mid-activation, no watchdog (backend healthy) | **P1** |
 | 15 | Claude-updater patch anchors use `\w+` — `$`-aliases in newer minified bundles cause false drift, updates held back | **P2** |
 | 16 | Built-in screenshot (capture overlay) deadlocks the desktop shell — sync Tauri command does grab/OCR + window ops on the main thread | **P1** |
+| 17 | Desktop shell self-deadlocks — a window proc holds a lock across `PeekMessageW`, the re-entered handler waits on itself (captured stack) | **P1** |
 
 ---
 
 ## Observed architecture (context for all items)
 
 - **DB:** per-workspace **PGlite** (Postgres-in-WASM) at
-  `%LOCALAPPDATA%\Codittle\workspaces\<16-hex-id>\pgdata`.
+  `%LOCALAPPDATA%\Codittle\workspaces\<16-hex-id>\pgdata` (installed builds seen on 0.12.0
+  use `%LOCALAPPDATA%\CodittleData\workspaces\` instead; the old root is left in place).
 - **Tables seen:** `t24_banks`, `t24_release_streams`, `t24_stream_envs` (connections —
   `host, port, username, password_enc, ssh_home, remote_roots, exec_setup, stream_id`),
   `projects` (`name, target, project_subdir, release_stream_id, meta`), `project_graphs`
@@ -262,6 +264,79 @@ Cross-reference: **item 12** (backend dies → shell panics), **item 14** (rende
 host healthy), **this** (host hangs → everything else healthy). The one watchdog that covers
 all three is an *external* supervisor, not code inside any single process.
 
+### 17. Desktop shell self-deadlocks: a window proc holds a lock across `PeekMessageW`
+**Problem.** The entire desktop shell froze during ordinary use — every Tauri window flagged
+*Not Responding*, nothing crashed, nothing recovered. Same symptom as item 16 (host hangs,
+everything else healthy), but this time the host's UI-thread stack was **captured live**, and
+it shows the mechanism directly: a window procedure holds a lock and pumps messages, Windows
+dispatches a sent message back into the same thread, and the nested handler blocks on that
+same lock — the thread is waiting on itself. No screenshot was in progress (`captures\`
+untouched), so this is not item 16's trigger.
+**Evidence.** 2026-09-30, installed 0.12.0 (exe built 2026-09-27), WebView2 runtime
+154.0.4258.37 (auto-updated the day before):
+- `IsHungAppWindow` true for **all five** Tauri windows (four visible, one hidden) and the
+  `Tao Thread Event Target`. The host's UI thread (earliest-created) sat in
+  `Waiting / WrAlertByThreadId` — the kernel wait behind Rust `Mutex`/SRW locks and
+  `WaitOnAddress` — for **10+ minutes** with zero CPU: idle-blocked, not spinning.
+- UI-thread stack (exports-only symbols; exe frames as offsets):
+  ```
+  ntdll!ZwWaitForAlertByThreadId
+  ntdll!RtlWaitOnAddress / KERNELBASE!WaitOnAddress
+  codittle-desktop.exe+0x60b291      lock acquire, contended path   <- blocks forever
+  codittle-desktop.exe+0x4a418e      subclassed window proc (inner, re-entered)
+  comctl32!DefSubclassProc … USER32!CallWindowProcW
+  ntdll!KiUserCallbackDispatcher     <- kernel delivers an inbound *sent* message
+  win32u!NtUserPeekMessage / USER32!PeekMessageW
+  codittle-desktop.exe+0x4a36f4      subclassed window proc (outer) — calls PeekMessageW
+  comctl32!DefSubclassProc … USER32!CallWindowProcW
+  codittle-desktop.exe+0xef9b2 …     tao event loop -> main
+  ```
+- Every other host thread was idle: tokio workers parked, IOCP pollers, WebView2 threads,
+  child-process waiters. **No WebView2/COM frames on the UI stack** — the thread was not inside
+  an IPC-dispatched Tauri command, which separates this from item 16's inferred cause.
+- Children healthy throughout: sidecar `/health` → `{"status":"ok"}`, Theia backend → 200 in
+  12 ms, extension host running. (Two WebView2 renderers sat at 1.2–1.4 GB — heavy, but not
+  involved: the renderers are separate processes and kept running.)
+**Impact.** As item 16: the whole session is lost and the only recovery is an OS-level kill,
+which also takes down the backend and its SSH sessions (item 14). Recovery also has to confirm
+the old sidecar has exited before relaunching, or two PGlite instances can end up on the same
+`pgdata` — the corruption path of item 1.
+**Root cause (from the captured stack; no source/PDB, so function names are unknown).** The
+outer frame is a comctl32-subclassed window procedure in the shell (tao installs its window
+procs via `SetWindowSubclass`) that calls `PeekMessageW` **while holding a non-reentrant
+lock**. `PeekMessage` — like `GetMessage`, `SendMessage`, `MsgWaitForMultipleObjects` and
+implicitly-synchronous user32 calls such as `SetWindowPos`, `ShowWindow`, `SetWindowTextW`,
+`DestroyWindow` — **delivers pending inbound sent messages on the calling thread** before it
+returns. Codittle's windows parent cross-process WebView2 child windows, so such messages can
+arrive at any moment. The re-entered window proc tries to take the same lock; a Rust
+`std::sync::Mutex` is neither re-entrant nor timed, so the UI thread parks forever. It is
+timing-dependent (a sent message must land while the lock is held), so it is not tied to one
+user action and won't reproduce on demand.
+**Proposal.**
+- **Never hold a lock across a call that can pump messages.** In every window proc and
+  everything it calls: copy what's needed out of the guard, drop it, *then* call
+  `PeekMessageW` / `SetWindowPos` / `ShowWindow` / window-builder APIs. The offsets above
+  locate the outer proc for anyone holding the matching PDB.
+- **No blocking locks on the UI thread.** In window procs use `try_lock()`; if the state is
+  already held (re-entry), defer the work with `PostMessageW` to self instead of blocking.
+- **Check the pinned `tao` / `wry` versions** against upstream's Windows re-entrancy fixes and
+  upgrade if behind — the subclassed procs are tao's, so the fix may already exist upstream.
+- **Hang watchdog + symbols.** A background host thread that pings the UI thread
+  (`SendMessageTimeoutW` to the event-target window) and, after N missed deadlines, writes a
+  minidump (`MiniDumpWriteDump`) under `%LOCALAPPDATA%\Codittle\run\` and offers a restart.
+  Publish PDBs to a symbol store so those dumps resolve to function names — without them a
+  hang stack is offsets only (this item needed a hand-written stack walker).
+- **Make recovery safe.** Spawn the sidecar and Theia inside a Job object with
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` so killing the shell kills its children, and have the
+  sidecar take an exclusive lock on `pgdata` so a second instance fails fast instead of
+  opening it (ties to item 1).
+
+Cross-reference: **item 16** is the same symptom with an *inferred* cause (sync command waiting
+on a window op); this capture shows a different mechanism with no command on the stack. Both
+may exist — re-verify 16 with a stack capture the next time it reproduces. Downstream,
+`codittle_hang.py` captures and classifies exactly this (verdict *RE-ENTRANT LOCK DEADLOCK*)
+and can write the minidump the app doesn't.
+
 ---
 
 ## P2
@@ -335,6 +410,12 @@ trust in it.
   first). Used on 2026-06-24 to restore 11 connections from an orphaned workspace into the
   active one.
 - `codittle_connections.py` (+ `.mjs`): read-only connection inspector.
+- 2026-09-30: both of the above now scan `%LOCALAPPDATA%\CodittleData\workspaces` as well —
+  installed builds moved the workspaces there, and the tools had been silently reading the
+  stale old root (a `restore --apply` would have written into the wrong DB).
+- `codittle_hang.py`: read-only diagnosis of a frozen Codittle — hung windows, UI-thread wait
+  state + stack (classified), process tree with CPU / memory / WebView2 roles, backend probes,
+  optional minidump. Written for item 17; distinguishes items 12 / 14 / 16 / 17 in one run.
 
 > These are workarounds. Items 1–3 (warn + auto-backup + disk-as-source-of-truth) would make
 > them unnecessary.
