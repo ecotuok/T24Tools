@@ -29,7 +29,8 @@ t24-tools/
 ├── codittle_connections.py        ┐ Codittle connection inspector
 ├── codittle_connections.mjs       ┘  — reads the live Codittle database (no Codittle open needed)
 ├── codittle_db.py                 ┐ Codittle DB recovery — status / backup / restore
-└── codittle_db.mjs                ┘  — restore lost connections after a pgdata corruption
+├── codittle_db.mjs                ┘  — restore lost connections after a pgdata corruption
+└── codittle_hang.py               ← Codittle frozen? which layer is wedged, and why (read-only)
 ```
 
 > The store resolves automatically wherever you run the tools from. `--env` selects a host by
@@ -54,6 +55,7 @@ t24-tools/
 | **`run_192.py`** | 1 env | non-interactive example: run a command on a single host |
 | **`codittle_connections.py`** | local | list all Codittle SSH connections + live SSH status |
 | **`codittle_db.py`** | local | inspect / back up / **recover** Codittle's DB when it corrupts |
+| **`codittle_hang.py`** | local | Codittle frozen — host / renderer / backend? UI-thread stack + verdict |
 
 ---
 
@@ -173,7 +175,7 @@ app) and reports every SSH connection configured for the workspace, ordered by
 most-recently-used first. Also probes each host on port 22 to confirm SSH is up.
 
 **Prerequisites:**
-- Codittle desktop app installed (portable version in `Downloads\Codittle_*\` works).
+- Codittle desktop app installed (`%LOCALAPPDATA%\Codittle\`; a portable copy in `Downloads\Codittle_*\` also works).
 - No additional pip packages needed — only the standard library.
 - No need for Codittle to be open or running.
 
@@ -188,7 +190,7 @@ python codittle_connections.py --json          # raw JSON — pipe to jq
 > connection metadata, so you add servers in Codittle once and just key the passwords.
 
 **How it works:**
-1. Locates Codittle's `node.exe` from the running process or `Downloads\Codittle_*\`.
+1. Locates Codittle's `node.exe` — the installed `%LOCALAPPDATA%\Codittle\`, the running process, or `Downloads\Codittle_*\`.
 2. Runs `codittle_connections.mjs` (must live alongside this script) which copies
    Codittle's embedded PGlite database to a temp dir and queries `t24_stream_envs`.
 3. For each host, opens a TCP socket to port 22 (2-second timeout) to check SSH.
@@ -202,7 +204,8 @@ python codittle_connections.py --json          # raw JSON — pipe to jq
 ## D. `codittle_db.py` — recover Codittle's connections after a DB corruption
 
 Codittle keeps connections + projects in a per-workspace **PGlite** DB
-(`%LOCALAPPDATA%\Codittle\workspaces\<id>\pgdata`). If it corrupts, Codittle quarantines it
+(`%LOCALAPPDATA%\CodittleData\workspaces\<id>\pgdata` on installed builds; older builds used
+`%LOCALAPPDATA%\Codittle\workspaces\` — both are scanned). If it corrupts, Codittle quarantines it
 (`pgdata.corrupt-*`) and starts a **fresh empty** one — connections vanish from the UI but the
 data still lives in another workspace or a backup. This tool finds and restores it.
 
@@ -216,6 +219,31 @@ python codittle_db.py restore [--from ID|PATH] [--apply]
 **To recover:** quit Codittle fully → `codittle_db.py status` (it names the workspace that still
 has connections) → `codittle_db.py restore --from <ws> --apply` → reopen Codittle. Safe by
 default: dry-run unless `--apply`, refuses to write while Codittle is open, backs up first.
+
+---
+
+## E. `codittle_hang.py` — diagnose a frozen Codittle
+
+Run it **while Codittle is still frozen** (before you kill it — the evidence dies with the
+process). One command answers *which* layer is wedged, since each needs a different fix
+(`CODITTLE-HARDENING.md` items 12 / 14 / 16 / 17):
+
+```
+python codittle_hang.py                  # hung windows, UI-thread wait + stack, tree, backends, verdict
+python codittle_hang.py --all-threads    # + a stack for every host thread
+python codittle_hang.py --dump DIR       # + full-memory minidump of the host (~150 MB) for a bug report
+```
+
+- **Host deadlocked** — every window `HUNG`, UI thread idle-blocked (not spinning), stack
+  classified as *re-entrant lock* or *blocked wait*. Never self-recovers → restart.
+- **Renderer** — host responsive but a `webview: renderer` is hot / >1 GB → reload that window.
+- **Backend** — sidecar `/health` or Theia not answering.
+
+Stdlib + ctypes only (no wmic / PowerShell / psutil). Read-only: it suspends each sampled
+thread for the milliseconds a stack walk takes, and never kills anything — it prints the
+restart steps instead (kill the host, **confirm the sidecar is gone before relaunching** so two
+sidecars never open the same pgdata). Frames inside `codittle-desktop.exe` are `+offset` only
+(no PDB shipped) — comparable across runs of the same build; the exe timestamp is printed.
 
 ---
 
